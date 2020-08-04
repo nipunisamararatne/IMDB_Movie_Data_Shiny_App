@@ -1,0 +1,250 @@
+---
+title: "IMDB Movie Data"
+output: html_document
+author: Nipuni Samararatne
+runtime: shiny
+---
+
+# {.tabset}
+
+```{r loadpackages, include=FALSE}
+pacman::p_load(shiny, htmltools,tidyverse,plyr, 
+viridis, stringr,lubridate, ggplot2,   shinydashboard,DT,scales,formattable,caret,randomForest,dplyr,GGally)
+options(digits = 3)
+knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=6, fig.path = 'Figs/')
+
+```
+
+
+
+```{r,include=FALSE}
+# Load data
+movie_data <- read_csv("movie_metadata.csv")
+
+#Overall Pre-processing:
+
+#check for & get rid of duplicate rows
+sum(duplicated(movie_data))
+movie_data <- movie_data[!duplicated(movie_data), ]
+
+#check for missing data in each column
+colSums(sapply(movie_data, is.na))
+
+#remove missing data of gross & budget cols b/c need complete info
+#for tab 1 & tab 2
+movie_data <- movie_data[!is.na(movie_data$gross), ]
+movie_data <- movie_data[!is.na(movie_data$budget), ]
+
+#factor country column 
+movie_data$country <- as.factor(movie_data$country)  
+
+```
+
+
+
+```{r,include=FALSE}
+#Tab 1 Preprocessing
+
+#create new dataframe for grouped locations by mean ROI
+country_ROI <- movie_data %>%
+  group_by(country) %>%
+  dplyr::summarise(avg_gross = mean(gross), avg_budget = mean(budget))
+
+country_ROI <- country_ROI %>%
+  mutate(meanROI = ((avg_gross - avg_budget)/ avg_budget))
+
+country_ROI <- country_ROI %>% select (-c(avg_gross,avg_budget)) %>%
+  arrange(desc(meanROI)) 
+
+#rename column names
+colnames(country_ROI) = c("Location", "Mean ROI")
+
+```
+
+
+
+```{r,include=FALSE}
+#Tab 2 Preprocessing
+
+#create new dataframe for actor1/director combos by mean ROI
+actor1_director <- movie_data %>%
+  group_by(actor_1_name,director_name) %>%
+  dplyr::summarise(avg_gross = mean(gross), avg_budget = mean(budget))
+
+actor1_director <- actor1_director %>%
+  mutate(meanROI = ((avg_gross - avg_budget)/ avg_budget))
+
+actor1_director <- actor1_director %>% select (-c(avg_gross,avg_budget)) %>% arrange(desc(meanROI)) 
+
+#rename column names
+colnames(actor1_director) = c("Actor 1", "Director","Mean ROI")
+
+```
+
+
+
+```{r,include=FALSE}
+#Tab 3 Preprocessing
+
+#create new ratio of critical reviews out of total reviews
+movie_data$ratio_criticreviews <- movie_data$num_critic_for_reviews / movie_data$num_user_for_reviews
+
+#drop variables that were created like profit & cols like genres, plot
+#keywords,imdb link, names that can't be analyzed and/or aren't useful 
+
+#also drop cast total fb likes & instead keep individual fb likes b/c
+#redundant info
+
+#finally drop critical reviews, user for reviews b/c redundant since have
+#ratio of critical/total & make new dataset
+movie_data3 <- subset(movie_data, select = -c(genres,plot_keywords,
+                      movie_imdb_link,director_name,actor_2_name,
+                      actor_1_name,movie_title,actor_3_name,cast_total_facebook_likes,num_critic_for_reviews,num_user_for_reviews))
+
+#turn all character vars into factors
+movie_data3 <- movie_data3 %>% mutate_if(is.character, as.factor)
+
+#check for missing data in each column
+colSums(sapply(movie_data3, is.na))
+
+#drop missing values
+sum(is.na.data.frame(movie_data3))
+movie_data3 <- na.omit(movie_data3)
+
+#correlation matrix shows that no correlation above 0.7 for numeric cols so can be confident that variables are independent of each other for model
+movie_data3num <- dplyr::select_if(movie_data3, is.numeric)
+ggcorr(movie_data3num, label = TRUE, label_round = 2, label_size = 3.5, size = 2, hjust = .85)
+
+#partition data into training & test
+set.seed(42)
+train <- sample(nrow(movie_data3), 0.8*nrow(movie_data3), replace = FALSE)
+movie.test <- movie_data3[-train, "imdb_score"]
+movie.test <- unclass(movie.test)
+movie.test <- as.numeric(unlist(movie.test))
+
+```
+
+
+
+```{r,include=FALSE}
+#Tab 4 Preprocessing
+
+#create new budget_level col based on quantiles
+movie_data <- movie_data %>% mutate(budget_level = cut(budget, 
+                        quantile(budget, c(0, .25, .75, 1)), 
+                        labels = c('Low', 'Medium', 'High'), 
+                        include.lowest = TRUE))
+
+```
+
+## Tab 1
+
+```{r,echo=FALSE}
+
+ DT::renderDataTable({
+     formattable::as.datatable(formattable(country_ROI,align=c("l"),list(`Mean ROI` = formatter("t1colors",                                                   x ~ percent(x),
+    style = x ~ style(color = ifelse(x > 0,
+    "green", ifelse(x < 0, "red", "black")))))),caption = htmltools::tags$caption(style = 'caption-side: top; text-align: center; color:black; font-size:150% ;','Profitability of Movies for Each Location'))
+    })
+
+```
+
+
+The mean return on investment (ROI) was calculated by finding the average profit of each location divided by the average budget of each location and then multiplying by 100. Budget is assumed to be how much the production planned to/spent on the movie and gross is assumed to be gross income. The dataset does not specify which currency the data are in or if the numbers were adjusted for inflation.
+
+If we are only looking at ROI, it appears that the top 3 most profitable movie locations are Afghanistan, the Philippines, and Argentina. Of course, if we were looking at the total profit or total gross income, these results would be different and we would get a more expected answer like the U.S. as the top location. 
+
+
+
+## Tab 2
+
+```{r,echo=FALSE}
+
+DT::renderDataTable({
+     formattable::as.datatable(formattable(actor1_director,align=c("l"),list(`Mean ROI` = formatter("t2colors",                                                   x ~ percent(x),
+    style = x ~ style(color = ifelse(x > 0,
+    "green", ifelse(x < 0, "red", "black")))))),caption = htmltools::tags$caption(style = 'caption-side: top; text-align: center; color:black; font-size:150% ;','Profitability of Movies for Actor1/Director Combinations'))
+    })
+
+```
+
+
+Again, mean ROI was calculated by finding the average profit of each combination divided by the average budget of each combination and then multiplying by 100. Budget is assumed to be how much the production planned to/spent on the movie and gross is assumed to be gross income. The dataset does not specify which currency the data are in or if the numbers were adjusted for inflation.
+
+Looking at ROI, it seems that the actor 1/director combination of Micah Sloat and Oren Peli, respectively, produced the most profitable movies during the time period of this dataset. The second most profitable is Greg Ayres and Jonathan Caouette. However, again, if we are looking at a metric like total profit or total gross income, these conclusions will most likely be different.
+
+## Tab 3
+
+<center> <h3>Random Forest Model</h3> </center>
+
+**Background/Explanation:**
+
+The important variables in predicting/explaining the IMDB score are generated from a random forest regression model. Random forest is an
+ensemble method which gives more accurate predictions than using a 
+simple regression tree. A regression tree is a way to predict an outcome based on some predictors and is displayed using a tree diagram. It uses recursive partitioning which splits all the records in such a way as to get a maximum level of homogeneity/purity in the new sections.
+
+Random forest uses a large amount of trees and averages the predictions. Each time a split is made, only a random amount of the predictors are picked on which to split. The mtry parameter is the number of predictors that are chosen on each split. In this model, the number of trees is chosen automatically but you can choose the mtry value. The % of variance explained means how good the model is in explaining the variation in the dataset and can be used to compare whether one model is good or bad.
+
+Random forest generates a plot labeled %IncMSE in which the top most variables would lead to the biggest decrease in the accuracy of the model if they were eliminated whereas the bottom ones would not cause as big of a decrease. This means that the most important variables in explaining the IMDB score are at the top.
+
+It also generates a second plot called IncNodePurity which shows the total decrease in node impurity that results from splitting over a specific variable averaging across all trees. %IncMSE is the more informative measure so when finding the most important predictors we should look at that. 
+
+You will see that changing the mtry parameter results in similar plots for %IncMSE. The plots indicate that total number of users who voted for the movie, duration of the movie, and budget are amongst the most important variables in predicting the IMDB score.
+
+```{r,echo=FALSE}
+
+sliderInput(inputId = "randomForest", label = "Choose # of split predictors:",
+                  min = 2, max = 8, value = 8)
+actionButton(inputId = "runButton",label = "Run")
+
+
+#run random forest with user input
+runModel <- eventReactive(input$runButton,{
+  
+  set.seed(42)
+  movie.rf <- randomForest(imdb_score~., data = movie_data3, subset =  train, mtry = input$randomForest, importance = TRUE)
+movie.rf
+
+})
+
+#print summary call of model
+renderPrint({
+      runModel()
+    })
+
+#generate importance of variables
+renderPlot({
+  varImpPlot(runModel())
+})
+
+```
+
+
+## Tab 4
+
+```{r,echo=FALSE}
+
+radioButtons(inputId = "fblikes", label = "Choose a variable:",
+           c("Total Movie Facebook Likes" = "movie_facebook_likes", "Total Cast Facebook Likes" = "cast_total_facebook_likes")
+           )
+
+renderPlot({
+      likes_plot <- ggplot(movie_data,aes(x=movie_data$title_year,y=get(input$fblikes), 
+        group=movie_data$budget_level, color=movie_data$budget_level)) +
+        geom_point(stat = "identity") +
+        labs(x="Title Year",
+        y="Number of Likes",colour = "Budget Level",title = "Facebook Likes vs. Year of Movie by Budget Level") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      
+      likes_plot + scale_y_continuous(labels = comma)
+      
+    })
+
+```
+
+Again, the dataset does not specify whether or not the gross and budget columns were adjusted for inflation. Budgets were categorized as low if they fell between the minimum value and the 1st quartile, medium if between the 1st and 3rd quartiles, and high if between the 3rd quartile and the maximum value. Just looking at the numbers alone, if we are looking at both types of facebook likes, it appears that not a lot of movies were produced before 1980 and of those that were, they were low budget. Most movies were produced within about the last 30 years and they had a range of low to high budgets.
+
+For total facebook likes for the movie, high budget movies within about the last 10 years have the most likes and low budget movies across all the years have the least likes. In general, movies after 1980 have more likes than movies from before.
+
+For total likes for the whole cast, the data is a little more uniform with all budget levels having similar amount of likes for movies after 1980. Again we see that movies after 1980 have more likes. There are some outliers with one medium budget movie in the early 2000's with a very high amount of likes. 
+
